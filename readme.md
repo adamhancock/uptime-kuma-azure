@@ -6,6 +6,6 @@ az login
 az group create -n "uptimekuma" -l "westeurope"
 az deployment group create -n uptimekuma \
  -g "uptimekuma" \
- --parameters name=<changeme> location=westeurope \
+ --parameters name=<changeme>-uptimekuma location=westeurope \
  --template-uri https://raw.githubusercontent.com/adamhancock/uptime-kuma-azure/master/dist/main.json 
 ```
