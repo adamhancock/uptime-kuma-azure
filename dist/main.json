@@ -1,0 +1,300 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.12.1.58429",
+      "templateHash": "5121093640127991602"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "westeurope"
+    },
+    "name": {
+      "type": "string",
+      "defaultValue": "a9k-uptimekuma"
+    },
+    "guidValue": {
+      "type": "string",
+      "defaultValue": "[newGuid()]"
+    }
+  },
+  "variables": {
+    "mysqlAdminPassword": "[format('{0}-{1}', toUpper(uniqueString(resourceGroup().id)), parameters('guidValue'))]",
+    "storageName": "[format('{0}storage', replace(parameters('name'), '-', ''))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2021-09-01",
+      "name": "[format('{0}/{1}/{2}', variables('storageName'), 'default', 'uptime-kuma')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', variables('storageName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices",
+      "apiVersion": "2021-09-01",
+      "name": "[format('{0}/{1}', variables('storageName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2022-03-01",
+      "name": "[parameters('name')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', parameters('name')), '2020-03-01-preview').customerId]",
+            "sharedKey": "[listkeys(resourceId('Microsoft.OperationalInsights/workspaces', parameters('name')), '2020-08-01').primarySharedKey]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('name'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2020-03-01-preview",
+      "name": "[parameters('name')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "retentionInDays": 30,
+        "features": {
+          "searchVersion": 1
+        },
+        "sku": {
+          "name": "PerGB2018"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2022-03-01",
+      "name": "[parameters('name')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('name'))]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 3001,
+            "transport": "Auto",
+            "allowInsecure": true
+          }
+        },
+        "template": {
+          "volumes": [
+            {
+              "name": "azure-files-volume",
+              "storageType": "AzureFile",
+              "storageName": "[variables('storageName')]"
+            }
+          ],
+          "containers": [
+            {
+              "image": "ghcr.io/adamhancock/uptime-kuma/uptime-kuma-mysql:mysql",
+              "name": "uptime-kuma",
+              "env": [
+                {
+                  "name": "DB_TYPE",
+                  "value": "mysql"
+                },
+                {
+                  "name": "DB_HOST",
+                  "value": "[reference(resourceId('Microsoft.DBforMySQL/flexibleServers', format('{0}-mysql', parameters('name'))), '2021-12-01-preview').fullyQualifiedDomainName]"
+                },
+                {
+                  "name": "DB_NAME",
+                  "value": "uptimekuma"
+                },
+                {
+                  "name": "DB_USER",
+                  "value": "uptimekuma"
+                },
+                {
+                  "name": "DB_PASS",
+                  "value": "[variables('mysqlAdminPassword')]"
+                },
+                {
+                  "name": "DB_SSL",
+                  "value": "true"
+                }
+              ],
+              "resources": {
+                "cpu": "0.25",
+                "memory": "0.5Gi"
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/app/data",
+                  "volumeName": "azure-files-volume"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/",
+                    "port": 3001,
+                    "scheme": "HTTP"
+                  },
+                  "periodSeconds": 10
+                },
+                {
+                  "type": "Readiness",
+                  "httpGet": {
+                    "path": "/",
+                    "port": 3001,
+                    "scheme": "HTTP"
+                  },
+                  "periodSeconds": 10
+                },
+                {
+                  "type": "Startup",
+                  "httpGet": {
+                    "path": "/",
+                    "port": 3001,
+                    "scheme": "HTTP"
+                  },
+                  "initialDelaySeconds": 30,
+                  "periodSeconds": 10
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 1
+          }
+        }
+      },
+      "identity": {
+        "type": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('name'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('name'), variables('storageName'))]",
+        "[resourceId('Microsoft.DBforMySQL/flexibleServers', format('{0}-mysql', parameters('name')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforMySQL/flexibleServers",
+      "apiVersion": "2021-12-01-preview",
+      "name": "[format('{0}-mysql', parameters('name'))]",
+      "sku": {
+        "name": "Standard_B1ms",
+        "tier": "Burstable"
+      },
+      "properties": {
+        "administratorLogin": "uptimekuma",
+        "createMode": "Default",
+        "administratorLoginPassword": "[variables('mysqlAdminPassword')]",
+        "storage": {
+          "storageSizeGB": 20,
+          "iops": 360,
+          "autoGrow": "Enabled"
+        },
+        "version": "5.7",
+        "availabilityZone": "1",
+        "replicationRole": "None",
+        "backup": {
+          "backupRetentionDays": 7,
+          "geoRedundantBackup": "Disabled"
+        },
+        "highAvailability": {
+          "mode": "Disabled"
+        }
+      },
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.DBforMySQL/flexibleServers/firewallRules",
+      "apiVersion": "2021-12-01-preview",
+      "name": "[format('{0}/{1}', format('{0}-mysql', parameters('name')), format('{0}-mysql-allow-azure', parameters('name')))]",
+      "properties": {
+        "startIpAddress": "0.0.0.0",
+        "endIpAddress": "0.0.0.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforMySQL/flexibleServers', format('{0}-mysql', parameters('name')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforMySQL/flexibleServers/databases",
+      "apiVersion": "2021-05-01-preview",
+      "name": "[format('{0}/{1}', format('{0}-mysql', parameters('name')), 'uptimekuma')]",
+      "properties": {
+        "charset": "utf8",
+        "collation": "utf8_general_ci"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforMySQL/flexibleServers', format('{0}-mysql', parameters('name')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2021-09-01",
+      "name": "[variables('storageName')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "location": "[parameters('location')]",
+      "tags": {},
+      "properties": {
+        "dnsEndpointType": "Standard",
+        "defaultToOAuthAuthentication": false,
+        "publicNetworkAccess": "Enabled",
+        "allowCrossTenantReplication": true,
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": true,
+        "allowSharedKeyAccess": true,
+        "networkAcls": {
+          "bypass": "AzureServices",
+          "virtualNetworkRules": [],
+          "ipRules": [],
+          "defaultAction": "Allow"
+        },
+        "supportsHttpsTrafficOnly": true,
+        "encryption": {
+          "requireInfrastructureEncryption": false,
+          "services": {
+            "file": {
+              "keyType": "Account",
+              "enabled": true
+            }
+          },
+          "keySource": "Microsoft.Storage"
+        },
+        "accessTier": "Hot"
+      }
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments/storages",
+      "apiVersion": "2022-06-01-preview",
+      "name": "[format('{0}/{1}', parameters('name'), variables('storageName'))]",
+      "properties": {
+        "azureFile": {
+          "accessMode": "readWrite",
+          "accountKey": "[listkeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2021-09-01').keys[0].value]",
+          "accountName": "[variables('storageName')]",
+          "shareName": "uptime-kuma"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('name'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    }
+  ]
+}
